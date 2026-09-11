@@ -1,16 +1,16 @@
 import React, { useState } from 'react';
-import { Plus, Search, Filter, CheckCircle2, Circle, Archive, Trash2, Edit2, X, ChevronDown } from 'lucide-react';
+import { Plus, Search, Filter, ChevronDown } from 'lucide-react';
 import { TaskStatus, TaskPriority, Task } from '../types';
 import { useStore } from '../store';
+import { TaskItem } from './TaskItem';
 
 export function TasksView() {
-  const { tasks, projects, addTask, updateTask, deleteTask, completeTask, reopenTask, archiveTask } = useStore();
+  const { tasks, projects, addTask } = useStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatus, setFilterStatus] = useState<TaskStatus | 'ALL'>('ALL');
   const [filterPriority, setFilterPriority] = useState<TaskPriority | 'ALL'>('ALL');
   const [filterProject, setFilterProject] = useState<string>('ALL');
   const [showAddForm, setShowAddForm] = useState(false);
-  const [editingTask, setEditingTask] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
 
   // Form state
@@ -54,20 +54,7 @@ export function TasksView() {
     setShowAddForm(false);
   };
 
-  const priorityColors = {
-    [TaskPriority.LOW]: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
-    [TaskPriority.MEDIUM]: 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300',
-    [TaskPriority.HIGH]: 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300',
-    [TaskPriority.CRITICAL]: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300',
-  };
 
-  const statusIcons = {
-    [TaskStatus.NOT_STARTED]: <Circle className="w-5 h-5 text-gray-400" />,
-    [TaskStatus.IN_PROGRESS]: <div className="w-5 h-5 rounded-full border-2 border-indigo-500 flex items-center justify-center"><div className="w-2 h-2 rounded-full bg-indigo-500" /></div>,
-    [TaskStatus.COMPLETED]: <CheckCircle2 className="w-5 h-5 text-emerald-500" />,
-    [TaskStatus.CANCELLED]: <X className="w-5 h-5 text-gray-400" />,
-    [TaskStatus.ARCHIVED]: <Archive className="w-5 h-5 text-gray-400" />,
-  };
 
   return (
     <div className="p-4 md:p-8 max-w-5xl mx-auto">
@@ -234,99 +221,9 @@ export function TasksView() {
         </div>
       ) : (
         <div className="space-y-2">
-          {filteredTasks.map(task => {
-            const project = projects.find(p => p.id === task.projectId);
-            const isEditing = editingTask === task.id;
-            
-            return (
-              <div key={task.id} className={`bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-4 transition-all hover:shadow-sm ${task.status === TaskStatus.COMPLETED ? 'opacity-60' : ''}`}>
-                <div className="flex items-start gap-3">
-                  {/* Status toggle */}
-                  <button
-                    onClick={() => {
-                      if (task.status === TaskStatus.COMPLETED) reopenTask(task.id);
-                      else completeTask(task.id);
-                    }}
-                    className="mt-0.5 flex-shrink-0"
-                  >
-                    {statusIcons[task.status]}
-                  </button>
-
-                  {/* Content */}
-                  <div className="flex-1 min-w-0">
-                    {isEditing ? (
-                      <input
-                        type="text"
-                        value={newTitle}
-                        onChange={(e) => setNewTitle(e.target.value)}
-                        onBlur={() => { updateTask(task.id, { title: newTitle }); setEditingTask(null); }}
-                        onKeyDown={(e) => { if (e.key === 'Enter') { updateTask(task.id, { title: newTitle }); setEditingTask(null); } }}
-                        className="w-full px-2 py-1 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                        autoFocus
-                      />
-                    ) : (
-                      <p className={`text-sm font-medium text-gray-900 dark:text-white ${task.status === TaskStatus.COMPLETED ? 'line-through' : ''}`}>
-                        {task.title}
-                      </p>
-                    )}
-                    
-                    {task.description && (
-                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">{task.description}</p>
-                    )}
-                    
-                    <div className="flex flex-wrap items-center gap-2 mt-2">
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${priorityColors[task.priority]}`}>
-                        {task.priority}
-                      </span>
-                      {project && (
-                        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400">
-                          {project.icon} {project.name}
-                        </span>
-                      )}
-                      <span className="text-xs text-gray-400">
-                        🍅 {task.completedPomodoros}/{task.estimatedPomodoros}
-                      </span>
-                      {task.dueDate && (
-                        <span className="text-xs text-gray-400">
-                          📅 {task.dueDate}
-                        </span>
-                      )}
-                      {task.tags.map(tag => (
-                        <span key={tag} className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400">
-                          #{tag}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Actions */}
-                  <div className="flex items-center gap-1 flex-shrink-0">
-                    <button
-                      onClick={() => { setEditingTask(task.id); setNewTitle(task.title); }}
-                      className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                      title="Edit"
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => archiveTask(task.id)}
-                      className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                      title="Archive"
-                    >
-                      <Archive className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => { if (confirm('Delete this task?')) deleteTask(task.id); }}
-                      className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30 text-gray-400 hover:text-red-500"
-                      title="Delete"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
+          {filteredTasks.map(task => (
+            <TaskItem key={task.id} task={task} />
+          ))}
         </div>
       )}
 

@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import {
   TimerState, TimerMode, TaskStatus, TaskPriority, ProjectStatus,
   SessionStatus, Theme, View, Task, Project, Session, Goal,
-  TimerSettings, AppState, TimerData, DailyStats
+  TimerSettings, AppState, TimerData, DailyStats, TaskTimer
 } from '../types';
 import { getTodayKey, getDaysAgo, getStreakDays } from '../utils/time';
 import { saveToStorage, loadFromStorage } from '../utils/storage';
@@ -80,6 +80,7 @@ interface PomodoroStore {
   resetTimer: () => void;
   skipTimer: () => void;
   tick: () => void;
+  tickTaskTimers: () => void;
   setTimerMode: (mode: TimerMode) => void;
   selectTask: (taskId: string | null) => void;
   selectProject: (projectId: string | null) => void;
@@ -91,6 +92,17 @@ interface PomodoroStore {
   completeTask: (id: string) => void;
   reopenTask: (id: string) => void;
   archiveTask: (id: string) => void;
+  
+  // Per-task timer actions
+  startTaskTimer: (taskId: string) => void;
+  pauseTaskTimer: (taskId: string) => void;
+  resumeTaskTimer: (taskId: string) => void;
+  stopTaskTimer: (taskId: string) => void;
+  resetTaskTimer: (taskId: string) => void;
+  skipTaskTimer: (taskId: string) => void;
+  setTaskTimerMode: (taskId: string, mode: TimerMode) => void;
+  setTaskFocusDuration: (taskId: string, minutes: number) => void;
+  getActiveTaskTimers: () => { task: Task; timer: TaskTimer }[];
   
   // Project actions
   addProject: (project: Partial<Project>) => void;
@@ -518,7 +530,136 @@ export const useStore = create<PomodoroStore>((set, get) => ({
         }
       });
     }
+    
+    // Also tick all per-task timers
+    get().tickTaskTimers();
     get().persistState();
+  },
+
+  // Tick all per-task timers
+  tickTaskTimers: () => {
+    const { tasks, settings, sessions } = get();
+    const now = Date.now();
+    let newSessions: Session[] = [];
+    let tasksChanged = false;
+    
+    const updatedTasks = tasks.map(task => {
+      if (!task.timer || task.timer.state !== TimerState.RUNNING || !task.timer.startTimestamp) {
+        return task;
+      }
+      
+      const elapsed = Math.floor((now - task.timer.startTimestamp) / 1000);
+      const remaining = Math.max(0, task.timer.totalSeconds - elapsed);
+      
+      if (remaining <= 0) {
+        // Task timer completed
+        tasksChanged = true;
+        const session: Session = {
+          id: task.timer.sessionId || uuidv4(),
+          mode: task.timer.mode,
+          status: SessionStatus.COMPLETED,
+          startTime: task.timer.wallClockStart!,
+          endTime: new Date().toISOString(),
+          plannedDuration: task.timer.totalSeconds,
+          actualDuration: task.timer.totalSeconds,
+          pausedDuration: task.timer.pausedDuration,
+          taskId: task.id,
+          projectId: task.projectId,
+          interruptions: task.timer.interruptions,
+          notes: '',
+          cycleNumber: task.timer.cycleNumber,
+        };
+        newSessions.push(session);
+        
+        // Play sound
+        if (settings.soundEnabled) {
+          if (task.timer.mode === TimerMode.FOCUS) {
+            playCompletionSound(settings.soundVolume);
+          } else {
+            playBreakCompleteSound(settings.soundVolume);
+          }
+        }
+        
+        // Notification
+        if (settings.notificationsEnabled) {
+          if (task.timer.mode === TimerMode.FOCUS) {
+            sendNotification(`Pomodoro Complete: ${task.title}`, 'Time for a break!');
+          } else {
+            sendNotification(`Break Complete: ${task.title}`, 'Ready to focus again?');
+          }
+        }
+        
+        // Determine next mode
+        let nextMode: TimerMode;
+        let newPomodoros = task.timer.pomodorosCompleted;
+        
+        if (task.timer.mode === TimerMode.FOCUS) {
+          newPomodoros += 1;
+          nextMode = newPomodoros % settings.longBreakInterval === 0 ? TimerMode.LONG_BREAK : TimerMode.SHORT_BREAK;
+        } else {
+          nextMode = TimerMode.FOCUS;
+        }
+        
+        let duration: number;
+        switch (nextMode) {
+          case TimerMode.FOCUS: {
+            const fd = task.focusDuration > 0 ? task.focusDuration : settings.focusDuration;
+            duration = fd * 60;
+            break;
+          }
+          case TimerMode.SHORT_BREAK: duration = settings.shortBreakDuration * 60; break;
+          case TimerMode.LONG_BREAK: duration = settings.longBreakDuration * 60; break;
+          default: duration = settings.focusDuration * 60;
+        }
+        
+        // Auto-start logic for task timer
+        const shouldAutoStart = 
+          (nextMode === TimerMode.SHORT_BREAK && settings.autoStartShortBreak) ||
+          (nextMode === TimerMode.LONG_BREAK && settings.autoStartLongBreak) ||
+          (nextMode === TimerMode.FOCUS && settings.autoStartFocus);
+        
+        const newTimerState = shouldAutoStart ? TimerState.RUNNING : TimerState.IDLE;
+        const newStartTimestamp = shouldAutoStart ? Date.now() : null;
+        const newWallClock = shouldAutoStart ? new Date().toISOString() : null;
+        const newSessionId = shouldAutoStart ? uuidv4() : null;
+        
+        const updatedTask = {
+          ...task,
+          completedPomodoros: task.timer.mode === TimerMode.FOCUS ? task.completedPomodoros + 1 : task.completedPomodoros,
+          timer: {
+            ...task.timer,
+            state: newTimerState,
+            mode: nextMode,
+            remainingSeconds: duration,
+            totalSeconds: duration,
+            startTimestamp: newStartTimestamp,
+            wallClockStart: newWallClock,
+            pausedDuration: 0,
+            pauseStartTimestamp: null,
+            sessionId: newSessionId,
+            pomodorosCompleted: newPomodoros,
+            interruptions: 0,
+          }
+        };
+        return updatedTask;
+      } else {
+        // Just update remaining time
+        return {
+          ...task,
+          timer: {
+            ...task.timer,
+            remainingSeconds: remaining,
+          }
+        };
+      }
+    });
+    
+    if (tasksChanged || updatedTasks.some((t, i) => t.timer?.remainingSeconds !== tasks[i].timer?.remainingSeconds)) {
+      set(state => ({
+        tasks: updatedTasks,
+        sessions: newSessions.length > 0 ? [...state.sessions, ...newSessions] : state.sessions,
+      }));
+    }
   },
 
   setTimerMode: (mode: TimerMode) => {
@@ -579,6 +720,8 @@ export const useStore = create<PomodoroStore>((set, get) => ({
       tags: partial.tags || [],
       notes: partial.notes || '',
       archived: false,
+      timer: null,
+      focusDuration: partial.focusDuration || 0,
     };
     set(state => ({ tasks: [...state.tasks, task] }));
     get().persistState();
@@ -621,6 +764,274 @@ export const useStore = create<PomodoroStore>((set, get) => ({
       )
     }));
     get().persistState();
+  },
+
+  // ===== PER-TASK TIMER ACTIONS =====
+  startTaskTimer: (taskId) => {
+    const { tasks, settings } = get();
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    
+    const focusDuration = task.focusDuration > 0 ? task.focusDuration : settings.focusDuration;
+    const duration = focusDuration * 60;
+    const sessionId = uuidv4();
+    const now = Date.now();
+    
+    const timer: TaskTimer = {
+      state: TimerState.RUNNING,
+      mode: TimerMode.FOCUS,
+      remainingSeconds: duration,
+      totalSeconds: duration,
+      startTimestamp: now,
+      wallClockStart: new Date().toISOString(),
+      pausedDuration: 0,
+      pauseStartTimestamp: null,
+      sessionId,
+      pomodorosCompleted: task.timer?.pomodorosCompleted || 0,
+      cycleNumber: task.timer?.cycleNumber || 1,
+      interruptions: 0,
+    };
+    
+    set(state => ({
+      tasks: state.tasks.map(t => t.id === taskId ? { ...t, timer, status: TaskStatus.IN_PROGRESS } : t)
+    }));
+    get().persistState();
+  },
+
+  pauseTaskTimer: (taskId) => {
+    const { tasks } = get();
+    set(state => ({
+      tasks: state.tasks.map(t => {
+        if (t.id !== taskId || !t.timer || t.timer.state !== TimerState.RUNNING) return t;
+        return {
+          ...t,
+          timer: {
+            ...t.timer,
+            state: TimerState.PAUSED,
+            pauseStartTimestamp: Date.now(),
+            interruptions: t.timer.interruptions + 1,
+          }
+        };
+      })
+    }));
+    get().persistState();
+  },
+
+  resumeTaskTimer: (taskId) => {
+    const { tasks } = get();
+    set(state => ({
+      tasks: state.tasks.map(t => {
+        if (t.id !== taskId || !t.timer || t.timer.state !== TimerState.PAUSED) return t;
+        const pausedDuration = t.timer.pauseStartTimestamp ? Date.now() - t.timer.pauseStartTimestamp : 0;
+        return {
+          ...t,
+          timer: {
+            ...t.timer,
+            state: TimerState.RUNNING,
+            pausedDuration: t.timer.pausedDuration + pausedDuration,
+            pauseStartTimestamp: null,
+            startTimestamp: t.timer.startTimestamp! + pausedDuration,
+          }
+        };
+      })
+    }));
+    get().persistState();
+  },
+
+  stopTaskTimer: (taskId) => {
+    const { tasks, sessions } = get();
+    const task = tasks.find(t => t.id === taskId);
+    if (!task || !task.timer) return;
+    
+    const elapsed = task.timer.totalSeconds - task.timer.remainingSeconds;
+    const session: Session = {
+      id: task.timer.sessionId || uuidv4(),
+      mode: task.timer.mode,
+      status: SessionStatus.ABANDONED,
+      startTime: task.timer.wallClockStart!,
+      endTime: new Date().toISOString(),
+      plannedDuration: task.timer.totalSeconds,
+      actualDuration: elapsed,
+      pausedDuration: task.timer.pausedDuration,
+      taskId: task.id,
+      projectId: task.projectId,
+      interruptions: task.timer.interruptions,
+      notes: '',
+      cycleNumber: task.timer.cycleNumber,
+    };
+    
+    set(state => ({
+      sessions: [...state.sessions, session],
+      tasks: state.tasks.map(t => t.id === taskId ? { ...t, timer: null } : t)
+    }));
+    get().persistState();
+  },
+
+  resetTaskTimer: (taskId) => {
+    const { tasks, settings } = get();
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    
+    const focusDuration = task.focusDuration > 0 ? task.focusDuration : settings.focusDuration;
+    const duration = focusDuration * 60;
+    
+    set(state => ({
+      tasks: state.tasks.map(t => {
+        if (t.id !== taskId) return t;
+        return {
+          ...t,
+          timer: t.timer ? {
+            ...t.timer,
+            state: TimerState.IDLE,
+            remainingSeconds: duration,
+            totalSeconds: duration,
+            startTimestamp: null,
+            wallClockStart: null,
+            pausedDuration: 0,
+            pauseStartTimestamp: null,
+            sessionId: null,
+            interruptions: 0,
+          } : null
+        };
+      })
+    }));
+    get().persistState();
+  },
+
+  skipTaskTimer: (taskId) => {
+    const { tasks, settings, sessions } = get();
+    const task = tasks.find(t => t.id === taskId);
+    if (!task || !task.timer) return;
+    
+    // Record skipped session
+    const elapsed = task.timer.totalSeconds - task.timer.remainingSeconds;
+    const session: Session = {
+      id: task.timer.sessionId || uuidv4(),
+      mode: task.timer.mode,
+      status: SessionStatus.SKIPPED,
+      startTime: task.timer.wallClockStart!,
+      endTime: new Date().toISOString(),
+      plannedDuration: task.timer.totalSeconds,
+      actualDuration: elapsed,
+      pausedDuration: task.timer.pausedDuration,
+      taskId: task.id,
+      projectId: task.projectId,
+      interruptions: task.timer.interruptions,
+      notes: '',
+      cycleNumber: task.timer.cycleNumber,
+    };
+    
+    // Determine next mode
+    let nextMode: TimerMode;
+    let newPomodoros = task.timer.pomodorosCompleted;
+    
+    if (task.timer.mode === TimerMode.FOCUS) {
+      newPomodoros += 1;
+      nextMode = newPomodoros % settings.longBreakInterval === 0 ? TimerMode.LONG_BREAK : TimerMode.SHORT_BREAK;
+    } else {
+      nextMode = TimerMode.FOCUS;
+    }
+    
+    let duration: number;
+    switch (nextMode) {
+      case TimerMode.FOCUS: {
+        const fd = task.focusDuration > 0 ? task.focusDuration : settings.focusDuration;
+        duration = fd * 60;
+        break;
+      }
+      case TimerMode.SHORT_BREAK: duration = settings.shortBreakDuration * 60; break;
+      case TimerMode.LONG_BREAK: duration = settings.longBreakDuration * 60; break;
+      default: duration = settings.focusDuration * 60;
+    }
+    
+    set(state => ({
+      sessions: [...state.sessions, session],
+      tasks: state.tasks.map(t => {
+        if (t.id !== taskId) return t;
+        return {
+          ...t,
+          timer: {
+            ...t.timer!,
+            state: TimerState.IDLE,
+            mode: nextMode,
+            remainingSeconds: duration,
+            totalSeconds: duration,
+            startTimestamp: null,
+            wallClockStart: null,
+            pausedDuration: 0,
+            pauseStartTimestamp: null,
+            sessionId: null,
+            pomodorosCompleted: newPomodoros,
+            interruptions: 0,
+          }
+        };
+      })
+    }));
+    get().persistState();
+  },
+
+  setTaskTimerMode: (taskId, mode) => {
+    const { tasks, settings } = get();
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    
+    let duration: number;
+    switch (mode) {
+      case TimerMode.FOCUS: {
+        const fd = task.focusDuration > 0 ? task.focusDuration : settings.focusDuration;
+        duration = fd * 60;
+        break;
+      }
+      case TimerMode.SHORT_BREAK: duration = settings.shortBreakDuration * 60; break;
+      case TimerMode.LONG_BREAK: duration = settings.longBreakDuration * 60; break;
+      default: duration = settings.focusDuration * 60;
+    }
+    
+    set(state => ({
+      tasks: state.tasks.map(t => {
+        if (t.id !== taskId) return t;
+        const baseTimer = t.timer || {
+          state: TimerState.IDLE,
+          mode: TimerMode.FOCUS,
+          remainingSeconds: duration,
+          totalSeconds: duration,
+          startTimestamp: null,
+          wallClockStart: null,
+          pausedDuration: 0,
+          pauseStartTimestamp: null,
+          sessionId: null,
+          pomodorosCompleted: 0,
+          cycleNumber: 1,
+          interruptions: 0,
+        };
+        return {
+          ...t,
+          timer: {
+            ...baseTimer,
+            mode,
+            remainingSeconds: duration,
+            totalSeconds: duration,
+            state: TimerState.IDLE,
+            sessionId: null,
+          }
+        };
+      })
+    }));
+    get().persistState();
+  },
+
+  setTaskFocusDuration: (taskId, minutes) => {
+    set(state => ({
+      tasks: state.tasks.map(t => t.id === taskId ? { ...t, focusDuration: minutes } : t)
+    }));
+    get().persistState();
+  },
+
+  getActiveTaskTimers: () => {
+    const { tasks } = get();
+    return tasks
+      .filter(t => t.timer && t.timer.state !== TimerState.IDLE)
+      .map(t => ({ task: t, timer: t.timer! }));
   },
 
   // ===== PROJECT ACTIONS =====
@@ -888,7 +1299,13 @@ export const useStore = create<PomodoroStore>((set, get) => ({
   },
 
   loadState: () => {
-    const tasks = loadFromStorage<Task[]>('tasks', []);
+    const rawTasks = loadFromStorage<Task[]>('tasks', []);
+    // Migrate tasks to include timer and focusDuration fields
+    const tasks = rawTasks.map(t => ({
+      ...t,
+      timer: t.timer || null,
+      focusDuration: t.focusDuration || 0,
+    }));
     const projects = loadFromStorage<Project[]>('projects', []);
     const sessions = loadFromStorage<Session[]>('sessions', []);
     const goals = loadFromStorage<Goal[]>('goals', []);

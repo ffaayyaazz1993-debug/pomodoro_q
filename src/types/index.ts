@@ -62,6 +62,21 @@ export enum View {
 }
 
 // ===== MODELS =====
+export interface TaskTimer {
+  state: TimerState;
+  mode: TimerMode;
+  remainingSeconds: number;
+  totalSeconds: number;
+  startTimestamp: number | null;
+  wallClockStart: string | null;
+  pausedDuration: number;
+  pauseStartTimestamp: number | null;
+  sessionId: string | null;
+  pomodorosCompleted: number;
+  cycleNumber: number;
+  interruptions: number;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -77,6 +92,8 @@ export interface Task {
   tags: string[];
   notes: string;
   archived: boolean;
+  timer: TaskTimer | null;
+  focusDuration: number; // per-task custom duration in minutes (0 = use global)
 }
 
 export interface Project {

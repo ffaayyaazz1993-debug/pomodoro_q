@@ -1,8 +1,114 @@
 import React, { useEffect, useRef } from 'react';
-import { Play, Pause, Target, Flame, Clock, CheckCircle2, TrendingUp, ArrowRight } from 'lucide-react';
+import { Play, Pause, Target, Flame, Clock, CheckCircle2, TrendingUp, ArrowRight, Square, SkipForward, RotateCcw } from 'lucide-react';
 import { TimerState, TimerMode, View } from '../types';
 import { useStore } from '../store';
 import { formatTime, formatDuration, getProgressPercentage } from '../utils/time';
+
+function ActiveTaskTimers() {
+  const { tasks, projects, startTaskTimer, pauseTaskTimer, resumeTaskTimer, stopTaskTimer, resetTaskTimer, skipTaskTimer, tickTaskTimers } = useStore();
+  const intervalRef = useRef<number | null>(null);
+  
+  const activeTimers = tasks.filter(t => t.timer && t.timer.state !== TimerState.IDLE);
+  const hasRunning = activeTimers.some(t => t.timer?.state === TimerState.RUNNING);
+  
+  useEffect(() => {
+    if (hasRunning) {
+      intervalRef.current = window.setInterval(() => tickTaskTimers(), 200);
+    } else {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    }
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [hasRunning, tickTaskTimers]);
+
+  if (activeTimers.length === 0) return null;
+
+  const modeLabels = {
+    [TimerMode.FOCUS]: 'Focus',
+    [TimerMode.SHORT_BREAK]: 'Short Break',
+    [TimerMode.LONG_BREAK]: 'Long Break',
+    [TimerMode.CUSTOM]: 'Custom',
+  };
+
+  return (
+    <div className="mt-6 bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-200 dark:border-gray-700 p-5">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <h2 className="font-semibold text-gray-900 dark:text-white">Active Task Timers</h2>
+          <span className="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 text-xs font-medium rounded-full">
+            {activeTimers.length} running
+          </span>
+        </div>
+        <button onClick={() => useStore.getState().setView(View.TASKS)} className="text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-700">
+          View Tasks
+        </button>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        {activeTimers.map(task => {
+          const timer = task.timer!;
+          const project = projects.find(p => p.id === task.projectId);
+          const progress = getProgressPercentage(timer.totalSeconds - timer.remainingSeconds, timer.totalSeconds);
+          const isRunning = timer.state === TimerState.RUNNING;
+          const isPaused = timer.state === TimerState.PAUSED;
+          
+          return (
+            <div key={task.id} className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl border border-gray-100 dark:border-gray-600">
+              <div className="flex items-center justify-between mb-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{task.title}</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className={`text-xs font-medium ${timer.mode === TimerMode.FOCUS ? 'text-indigo-600 dark:text-indigo-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                      {modeLabels[timer.mode]}
+                    </span>
+                    {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />}
+                    {isPaused && <span className="text-xs text-amber-500">⏸</span>}
+                    {project && <span className="text-xs text-gray-400 truncate">{project.icon} {project.name}</span>}
+                  </div>
+                </div>
+                <span className="text-lg font-mono font-bold text-gray-900 dark:text-white tabular-nums ml-2">
+                  {formatTime(timer.remainingSeconds)}
+                </span>
+              </div>
+              
+              <div className="h-1.5 bg-gray-200 dark:bg-gray-600 rounded-full overflow-hidden mb-2">
+                <div 
+                  className={`h-full rounded-full transition-all ${timer.mode === TimerMode.FOCUS ? 'bg-indigo-500' : 'bg-emerald-500'}`}
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              
+              <div className="flex items-center gap-1">
+                {timer.state === TimerState.IDLE && (
+                  <button onClick={() => startTaskTimer(task.id)} className="p-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white">
+                    <Play className="w-3 h-3" />
+                  </button>
+                )}
+                {isRunning && (
+                  <button onClick={() => pauseTaskTimer(task.id)} className="p-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white">
+                    <Pause className="w-3 h-3" />
+                  </button>
+                )}
+                {isPaused && (
+                  <button onClick={() => resumeTaskTimer(task.id)} className="p-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white">
+                    <Play className="w-3 h-3" />
+                  </button>
+                )}
+                <button onClick={() => resetTaskTimer(task.id)} className="p-1.5 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-400">
+                  <RotateCcw className="w-3 h-3" />
+                </button>
+                <button onClick={() => skipTaskTimer(task.id)} className="p-1.5 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-400">
+                  <SkipForward className="w-3 h-3" />
+                </button>
+                <button onClick={() => stopTaskTimer(task.id)} className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30 text-gray-400 hover:text-red-500 ml-auto">
+                  <Square className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export function Dashboard() {
   const { timerData, startTimer, pauseTimer, resumeTimer, tick, tasks, sessions, goals, setView, getTodayPomodoros, getTodayFocusMinutes, getTodayCompletedTasks, getStreak } = useStore();
@@ -196,6 +302,9 @@ export function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Active Task Timers */}
+      <ActiveTaskTimers />
 
       {/* Bottom section */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
